@@ -1,4 +1,12 @@
-import dynet as dy
+# import dynet as dy
+import re
+import random
+import torch
+import torch.nn as nn
+from torch import optim
+import torch.nn.functional as F
+torch.manual_seed(1)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Model():
     """Model predicts a sequence of actions, given an instruction and a starting world state.
