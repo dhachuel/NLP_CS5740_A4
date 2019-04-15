@@ -1,4 +1,6 @@
 import json
+import os
+import numpy as np
 from collections import Counter
 from argparse import ArgumentParser
 from model import Model
@@ -7,6 +9,23 @@ from alchemy_world_state import AlchemyWorldState
 from fsa import NO_ARG
 from nltk.tokenize import word_tokenize
 from nltk.stem.porter import *
+from gensim.models import Word2Vec, KeyedVectors
+import multiprocessing
+
+# GLOBALS
+global ACTION_TYPES, BEAKER_NUMBERS, CHEMICAL_COLOR_MAP, CHEMICAL_COLORS, WORD_EMB_SIZE
+ACTION_TYPES = {
+	'pop': 0,
+	'push': 1
+}
+BEAKER_NUMBERS = tuple(list(range(1, 8)))
+CHEMICAL_COLOR_MAP = {
+	'b':"brown",'g':"green",
+	'o':"orange", 'p':"purple",
+	'r':"red", 'y':"yellow"
+}
+CHEMICAL_COLORS = ('b', 'g', 'o', 'p', 'r', 'y')
+WORD_EMB_SIZE = 50
 
 
 def tokenize_word(text, stem=False):
@@ -24,6 +43,16 @@ def tokenize_word(text, stem=False):
 
 	return tokens
 
+def action2vec(action):
+	action_type_encoding = ACTION_TYPES[action.split(" ")[0]]
+	beaker_number_encoding = int(action.split(" ")[1])
+	if len(action.split(" ")) != 3:
+		chemical_color_encoding = 0
+	else:
+		chemical_color_encoding = CHEMICAL_COLORS.index(action.split(" ")[2]) + 1
+
+	return [action_type_encoding, beaker_number_encoding, chemical_color_encoding]
+
 def make_dictionary(corpus):
 	"""
 
@@ -40,7 +69,7 @@ def make_dictionary(corpus):
 	dictionary = [item[0] for item in words_sorted_by_frequency]
 	return {k: v for v, k in enumerate(dictionary)}
 
-def load_data(filename):
+def load_data(filename, train_filename):
 	"""Loads the data from the JSON files.
 
 	You are welcome to create your own class storing the data in it; e.g., you
@@ -54,8 +83,50 @@ def load_data(filename):
 	"""
 	with open(filename, 'r') as json_file:
 		data = json.load(json_file)
+	with open(train_filename, 'r') as json_file:
+		train_data = json.load(json_file)
+	corpus_instruction_sentences, action_embeddings, data_instructions = [], [], []
+	for example in data:
+		for item in example["utterances"]:
+			action_embeddings.append([action2vec(action) for action in item["actions"]])
+			data_instructions.append(item["instruction"].strip().split(" "))
+	for example in train_data:
+		for item in example["utterances"]:
+			corpus_instruction_sentences.append(item["instruction"].strip().split(" "))
 
-	return data
+	# Train word embeddings
+	if os.path.isdir("cache"):
+		os.makedirs("cache")
+	word2vec_cache_filename = "cache/word2vec.model"
+	cores = multiprocessing.cpu_count()  # Count the number of cores in a computer
+	w2v_model = Word2Vec(
+		window=4,
+		size=WORD_EMB_SIZE,
+		sample=6e-5,
+		alpha=0.03,
+		min_alpha=0.0007,
+		negative=5,
+		workers=cores - 1
+	)
+	if not os.path.exists(word2vec_cache_filename):
+		w2v_model.build_vocab(corpus_instruction_sentences, progress_per=1000)
+		w2v_model.train(corpus_instruction_sentences, total_examples=w2v_model.corpus_count, epochs=30, report_delay=1)
+		w2v_model.init_sims(replace=True)
+		w2v_model.save(word2vec_cache_filename)
+	else:
+		w2v_model = Word2Vec.load(word2vec_cache_filename)
+	instruction_embeddings = []
+	for instruction in data_instructions:
+		instruction_embedding = []
+		for word in instruction:
+			if word in w2v_model.wv.vocab:
+				instruction_embedding.append(w2v_model.wv.get_vector(word=word))
+			else:
+				instruction_embedding.append(np.random.normal(0, 1, WORD_EMB_SIZE))
+		instruction_embeddings.append(instruction_embedding)
+
+
+	return data, instruction_embeddings, action_embeddings
 
 def train(model, train_data):
 	"""Finds parameters in the model given the training data.
@@ -145,19 +216,9 @@ def main():
 	assert args.train or args.predict
 
 	# Load the data; you can also use this to construct vocabularies, etc.
-	train_data = load_data("data/train.json")
-	dev_data = load_data("data/dev.json")
-	test_data = load_data("data/test.json")
-
-	# Make vocabulary
-	corpus = " ".join(
-		[
-			" ".join(
-				[item["instruction"].strip() for item in example["utterances"]]
-			) for example in train_data
-		]
-	)
-	vocab = make_dictionary(corpus=corpus)
+	train_data, train_instruction_embeddings, train_action_embeddings = load_data(filename="data/train.json", train_filename="data/train.json")
+	dev_data, dev_instruction_embeddings, dev_action_embeddings = load_data(filename="data/dev.json", train_filename="data/train.json")
+	test_data, test_instruction_embeddings, _ = load_data(filename="data/test.json", train_filename="data/train.json")
 
 	# Construct a model object.
 	model = Model()

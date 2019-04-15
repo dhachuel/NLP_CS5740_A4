@@ -5,8 +5,46 @@ import torch
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
+from torch.autograd import Variable
 torch.manual_seed(1)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class LSTMEncoder(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTMEncoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+
+        self.inp = nn.Linear(input_size, hidden_size)
+        self.rnn = nn.LSTM(hidden_size, hidden_size, 2, dropout=0.05)
+        self.out = nn.Linear(hidden_size, output_size)
+
+    def step(self, input, hidden=None):
+        input = self.inp(input.view(1, -1)).unsqueeze(1)
+        output, hidden = self.rnn(input, hidden)
+        output = self.out(output.squeeze(1))
+        return output, hidden
+
+    def forward(self, inputs, hidden=None, force=True, steps=0):
+        if force or steps == 0: steps = len(inputs)
+        outputs = Variable(torch.zeros(steps, self.output_size, 1))
+        for i in range(steps):
+            if force or i == 0:
+                input = inputs[i]
+            else:
+                input = output
+            output, hidden = self.step(input, hidden)
+            # print(output)
+            # print(hidden)
+            outputs[i] = output
+        return outputs, hidden
+
+encoder = LSTMEncoder(input_size=50, hidden_size=100, output_size=3)
+inputs = [Variable(torch.from_numpy(item)) for item in dev_instruction_embeddings[0]]
+outputs, hidden = encoder.forward(inputs=inputs)
+
 
 class Model():
     """Model predicts a sequence of actions, given an instruction and a starting world state.
